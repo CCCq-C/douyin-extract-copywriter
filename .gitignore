@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.so
+.DS_Store
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Local generated media and transcripts
+内容收集/
+抖音下载/
+*.mp4
+*.wav
+*.m4a
+*.mp3
+*.srt
+*.vtt
+
+# Local model/cache directories
+.cache/
+models/
