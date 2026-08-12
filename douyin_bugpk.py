@@ -22,6 +22,7 @@
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -36,10 +37,11 @@ API_URL = "https://api.bugpk.com/api/douyin"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-# 知识库根目录 = 脚本上级的上级 (SKILLS/douyin-extract-copywriter → vault根)
+# 可通过 DOUYIN_OUTPUT_DIR 指向当前 Agent 的知识库；独立克隆时安全地写入项目目录。
 SCRIPT_DIR = Path(__file__).resolve().parent
-VAULT_ROOT = SCRIPT_DIR.parent.parent
-DEFAULT_OUTPUT_DIR = VAULT_ROOT / "内容收集"
+DEFAULT_OUTPUT_DIR = Path(
+    os.environ.get("DOUYIN_OUTPUT_DIR", str(SCRIPT_DIR / "内容收集"))
+).expanduser()
 
 MODEL_DIR_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
 
@@ -216,23 +218,22 @@ def check_environment() -> int:
         print(f"{fail} Python {sys.version.split()[0]} (需要 3.10+)")
         issues.append("python>=3.10")
 
-    # 2. requests
-    try:
-        import requests
-        print(f"{ok} requests {getattr(requests, '__version__', '已安装')}")
-    except ImportError:
-        print(f"{fail} requests 未安装 → 运行: pip install requests")
-        issues.append("requests")
+    # 2-4. Python 依赖。find_spec 只检查安装状态，避免自检时加载较重的 ASR 运行时。
+    packages = (
+        ("requests", "requests", "快速模式调用 BugPk API"),
+        ("httpx", "httpx", "采集模式获取页面、字幕和下载视频"),
+        ("faster-whisper", "faster_whisper", "本地 ASR 转写"),
+    )
+    missing_packages = []
+    for package, module, purpose in packages:
+        if importlib.util.find_spec(module) is not None:
+            print(f"{ok} {package} 已安装")
+        else:
+            print(f"{fail} {package} 未安装（{purpose}）")
+            issues.append(package)
+            missing_packages.append(package)
 
-    # 3. faster-whisper
-    try:
-        import faster_whisper
-        print(f"{ok} faster-whisper 已安装")
-    except ImportError:
-        print(f"{fail} faster-whisper 未安装 → 运行: pip install faster-whisper")
-        issues.append("faster-whisper")
-
-    # 4. ffmpeg / ffprobe
+    # 5. ffmpeg / ffprobe
     try:
         ffmpeg = find_ffmpeg()
         ffprobe = find_ffprobe(ffmpeg)
@@ -244,11 +245,18 @@ def check_environment() -> int:
     except FileNotFoundError as e:
         print(f"{fail} {e}")
         print("  → 安装 ffmpeg:")
-        print("    winget install Gyan.FFmpeg")
-        print("    或下载 https://www.gyan.dev/ffmpeg/builds/ 解压后把 bin 目录加入 PATH")
+        if sys.platform == "darwin":
+            print("    brew install ffmpeg")
+        elif os.name == "nt":
+            print("    winget install --id Gyan.FFmpeg -e --accept-package-agreements --accept-source-agreements")
+            print("    安装后新开终端，再运行 --check")
+        elif shutil.which("apt-get"):
+            print("    sudo apt-get update && sudo apt-get install -y ffmpeg")
+        else:
+            print("    请用当前 Linux 发行版的包管理器安装 ffmpeg 和 ffprobe 后重试")
         issues.append("ffmpeg")
 
-    # 5. faster-whisper 模型缓存
+    # 6. faster-whisper 模型缓存
     hub = MODEL_DIR_CACHE
     model_sizes = {"tiny": "75MB", "base": "145MB", "small": "484MB"}
     found_any = False
@@ -264,13 +272,24 @@ def check_environment() -> int:
         print(f"{warn} 模型缓存目录不存在，首次转写会自动下载模型")
     if not found_any:
         print("  国内网络下载慢/失败时设置镜像:")
-        print("    set HF_ENDPOINT=https://hf-mirror.com       (Windows)")
-        print("    export HF_ENDPOINT=https://hf-mirror.com    (macOS/Linux)")
+        if os.name == "nt":
+            print("    $env:HF_ENDPOINT=\"https://hf-mirror.com\"  (Windows PowerShell)")
+        else:
+            print("    export HF_ENDPOINT=https://hf-mirror.com    (macOS/Linux)")
 
     print("\n" + "=" * 44)
     if issues:
         print(f"❌ 发现 {len(issues)} 项缺失: {', '.join(issues)}")
-        print("在 Claude Code 中让 AI 按上方命令自动安装，装完重跑 --check 确认。")
+        if missing_packages:
+            python_cmd = f'& "{sys.executable}"' if os.name == "nt" else f'"{sys.executable}"'
+            packages_arg = " ".join(missing_packages)
+            print("  使用清华 PyPI 镜像安装到当前 Python（30 秒超时、重试 2 次）：")
+            print(
+                f"    {python_cmd} -m pip install --disable-pip-version-check --no-input "
+                f"--progress-bar raw --timeout 30 --retries 2 -i "
+                f"https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple {packages_arg}"
+            )
+        print("安装后重跑 --check；AI 不应反复执行同一条失败命令。")
         return 1
     print("✅ 环境完整，可以直接发抖音链接开始提取！")
     return 0
@@ -284,7 +303,7 @@ def main():
     parser.add_argument("--model", default="tiny", choices=["tiny", "base", "small"],
                         help="faster-whisper 模型大小，默认 tiny（快），base 更准")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR),
-                        help="笔记输出目录，默认知识库 内容收集/")
+                        help="笔记输出目录；默认项目内 内容收集/，可由 DOUYIN_OUTPUT_DIR 覆盖")
     args = parser.parse_args()
 
     if args.check:

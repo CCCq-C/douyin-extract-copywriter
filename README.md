@@ -54,67 +54,137 @@ API 字幕优先
 
 ## 环境要求
 
-### 基础环境
-
 - Python 3.10 或更高版本
 - `requests`：快速模式调用 BugPk API
 - `httpx`：采集模式获取抖音页面、下载视频和字幕
-- FFmpeg 与 FFprobe：音频提取、视频处理和时长检测
+- `faster-whisper`：快速模式和本地 ASR 转写
+- FFmpeg 与 FFprobe：本项目使用它们提取音频、处理视频和检测时长
 
-### 文案转写
+> `faster-whisper` 本身可用 PyAV 解码音频，但本项目的两个脚本仍会直接调用系统中的 FFmpeg/FFprobe，因此两者都需要可从 `PATH` 找到。
 
-以下场景需要安装 `faster-whisper`：
+## 首次安装（供人和 Agent 执行）
 
-- 使用 `douyin_bugpk.py` 快速模式
-- 使用 `douyin_fetch.py` 对没有可用 API 字幕的本地视频进行 ASR
+安装卡住通常不是业务脚本的问题，而是 Agent 没有把依赖装进**运行脚本的同一个 Python 环境**，或在慢网下无限重试。请严格按下面的顺序执行；不要单独运行裸 `pip install ...`，也不要假定项目一定在 `SKILLS/douyin-extract-copywriter`。
 
-如果只查询信息或读取已有 API 字幕，可以先不安装 `faster-whisper`。
+### 1. 定位项目并创建独立环境
 
-## 安装
-
-建议使用虚拟环境：
+先进入包含 `SKILL.md`、`requirements.txt` 和两个 `.py` 文件的项目目录。
 
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/CCCq-C/douyin-extract-copywriter.git
 cd douyin-extract-copywriter
-
-python3 -m venv .venv
-
-# macOS / Linux
-source .venv/bin/activate
-
-# Windows PowerShell
-.venv\\Scripts\\Activate.ps1
-
-python -m pip install --upgrade pip
-python -m pip install requests httpx
-python -m pip install faster-whisper  # 需要本地 ASR 时安装
 ```
 
-安装 FFmpeg：
+macOS / Linux：
 
 ```bash
-# macOS
+python3 -m venv .venv
+PROJECT_PYTHON="$PWD/.venv/bin/python"
+```
+
+Windows PowerShell：
+
+```powershell
+py -3.10 -m venv .venv
+$PROJECT_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe)
+```
+
+如果 `py -3.10` 不存在，请先安装 Python 3.10+；不要让 Agent 改用一个无法确认版本的 `pip`。
+
+可用系统包管理器时，Agent 可按当前系统安装 Python 后重新打开终端：
+
+```bash
+# macOS（Homebrew 已安装）
+brew install python@3.12
+
+# Ubuntu / Debian
+sudo apt-get update && sudo apt-get install -y python3 python3-venv
+```
+
+```powershell
+# Windows PowerShell
+winget install --id Python.Python.3.12 -e --accept-package-agreements --accept-source-agreements
+```
+
+### 2. 用国内 PyPI 镜像安装 Python 依赖
+
+以下命令使用清华大学 TUNA 的 HTTPS PyPI 镜像；`--progress-bar raw` 让非交互式 Agent 日志持续输出文本进度，`--timeout` 和 `--retries` 为网络异常设置了边界。镜像只对本次项目安装生效，不会修改用户全局 pip 配置。
+
+macOS / Linux：
+
+```bash
+"$PROJECT_PYTHON" -m pip install --upgrade pip \
+  --disable-pip-version-check --no-input --timeout 30 --retries 2 \
+  -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+"$PROJECT_PYTHON" -m pip install -r requirements.txt \
+  --disable-pip-version-check --no-input --progress-bar raw --timeout 30 --retries 2 \
+  -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+```
+
+Windows PowerShell：
+
+```powershell
+& $PROJECT_PYTHON -m pip install --upgrade pip --disable-pip-version-check --no-input --timeout 30 --retries 2 -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+& $PROJECT_PYTHON -m pip install -r requirements.txt --disable-pip-version-check --no-input --progress-bar raw --timeout 30 --retries 2 -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+```
+
+若这两条命令都失败，保留最后一段报错并**仅一次**改用官方 PyPI：把 `-i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple` 替换为 `-i https://pypi.org/simple`。不要在两个源之间无限循环重试。
+
+### 3. 安装 FFmpeg / FFprobe
+
+```bash
+# macOS（需要已安装 Homebrew）
 brew install ffmpeg
 
-# Windows
-winget install Gyan.FFmpeg
+# Ubuntu / Debian
+sudo apt-get update && sudo apt-get install -y ffmpeg
 ```
 
-也可以从 FFmpeg 官方发布渠道下载安装，并确保 `ffmpeg` 和 `ffprobe` 已加入 `PATH`。
+Windows PowerShell：
+
+```powershell
+winget install --id Gyan.FFmpeg -e --accept-package-agreements --accept-source-agreements
+```
+
+Windows 安装完成后需打开一个新终端，确保 `ffmpeg`、`ffprobe` 已进入 `PATH`。
+
+### 4. 验证，不通过才修复对应项
+
+```bash
+"$PROJECT_PYTHON" douyin_bugpk.py --check
+```
+
+自检会检查 Python、`requests`、`httpx`、`faster-whisper`、FFmpeg 和 FFprobe。出现 `❌` 时，Agent 只能安装该缺失项，然后重跑一次自检；同一条失败命令不得反复执行。模型缓存显示 `⚠️ 未缓存` 不表示 Python 安装失败：模型会在首次转写时下载。
+
+## 首次模型下载（不是 pip 安装）
+
+`tiny`、`base`、`small` 模型约为 75 MB、145 MB、484 MB。首次转写前，国内网络可先设置 Hugging Face 镜像；它与上面的 PyPI 镜像是两件事。
+
+```bash
+# macOS / Linux：在运行转写的同一个终端设置
+export HF_ENDPOINT=https://hf-mirror.com
+```
+
+```powershell
+# Windows PowerShell：在运行转写的同一个终端设置
+$env:HF_ENDPOINT="https://hf-mirror.com"
+```
+
+`hf-mirror.com` 是可选的第三方模型镜像，不是 PyPI 源。模型下载仍失败时，保留错误输出、检查磁盘空间和网络权限，不要把它误判为 `pip` 卡死。
 
 ## 环境自检
 
 快速模式提供完整自检：
 
 ```bash
-python douyin_bugpk.py --check
+"$PROJECT_PYTHON" douyin_bugpk.py --check
 ```
 
 它会检查：
 
 - Python 版本
 - `requests`
+- `httpx`
 - `faster-whisper`
 - FFmpeg / FFprobe
 - `tiny`、`base`、`small` 模型缓存
@@ -132,19 +202,19 @@ python douyin_bugpk.py --check
 传入完整链接：
 
 ```bash
-python douyin_bugpk.py "https://v.douyin.com/xxxxxxxx/"
+"$PROJECT_PYTHON" douyin_bugpk.py "https://v.douyin.com/xxxxxxxx/"
 ```
 
 也支持直接粘贴包含链接的整段分享文本：
 
 ```bash
-python douyin_bugpk.py "7.46 :2pm VyT:/ ... https://v.douyin.com/xxxxxxxx/ 复制此链接..."
+"$PROJECT_PYTHON" douyin_bugpk.py "7.46 :2pm VyT:/ ... https://v.douyin.com/xxxxxxxx/ 复制此链接..."
 ```
 
 指定更大的模型和输出目录：
 
 ```bash
-python douyin_bugpk.py \
+"$PROJECT_PYTHON" douyin_bugpk.py \
   "https://v.douyin.com/xxxxxxxx/" \
   --model base \
   --output-dir ./内容收集
@@ -157,13 +227,13 @@ python douyin_bugpk.py \
 ### 按配置筛选候选视频
 
 ```bash
-python douyin_fetch.py filter
+"$PROJECT_PYTHON" douyin_fetch.py filter
 ```
 
 临时覆盖筛选阈值：
 
 ```bash
-python douyin_fetch.py filter \
+"$PROJECT_PYTHON" douyin_fetch.py filter \
   --min-digg 10000 \
   --min-comment 0 \
   --min-share 0 \
@@ -173,8 +243,8 @@ python douyin_fetch.py filter \
 ### 下载指定视频并提取文案
 
 ```bash
-python douyin_fetch.py download 7611489793444171048
-python douyin_fetch.py download 7611489793444171048 --keyword AI
+"$PROJECT_PYTHON" douyin_fetch.py download 7611489793444171048
+"$PROJECT_PYTHON" douyin_fetch.py download 7611489793444171048 --keyword AI
 ```
 
 ### 只提取文案
@@ -182,13 +252,13 @@ python douyin_fetch.py download 7611489793444171048 --keyword AI
 如果 API 返回字幕，脚本会优先读取 API 字幕：
 
 ```bash
-python douyin_fetch.py transcript 7611489793444171048
+"$PROJECT_PYTHON" douyin_fetch.py transcript 7611489793444171048
 ```
 
 如果需要使用本地视频执行 ASR，请提供视频文件：
 
 ```bash
-python douyin_fetch.py transcript \
+"$PROJECT_PYTHON" douyin_fetch.py transcript \
   7611489793444171048 \
   --file ./视频.mp4
 ```
@@ -196,7 +266,7 @@ python douyin_fetch.py transcript \
 ### 只查看视频信息
 
 ```bash
-python douyin_fetch.py info 7611489793444171048
+"$PROJECT_PYTHON" douyin_fetch.py info 7611489793444171048
 ```
 
 ## 配置
@@ -282,12 +352,14 @@ ffprobe -version
 
 ### Whisper 下载很慢或失败
 
-可以设置模型下载镜像后重试：
+按“首次模型下载”一节设置模型下载镜像后重试：
 
 ```bash
 # macOS / Linux
 export HF_ENDPOINT=https://hf-mirror.com
+```
 
+```powershell
 # Windows PowerShell
 $env:HF_ENDPOINT="https://hf-mirror.com"
 ```
@@ -302,6 +374,7 @@ $env:HF_ENDPOINT="https://hf-mirror.com"
 douyin-extract-copywriter/
 ├── README.md          # 项目说明
 ├── SKILL.md           # 面向 AI 工作流的详细操作指引
+├── requirements.txt   # Python 运行依赖
 ├── config.json        # 采集模式配置
 ├── douyin_bugpk.py    # BugPk 快速逐字稿入口
 ├── douyin_fetch.py    # 查询、下载、筛选和字幕提取入口
@@ -310,12 +383,12 @@ douyin-extract-copywriter/
 
 ## 当前验证状态
 
-在本地环境中已验证：
+本次安装流程已在全新 Python 3.14.3 虚拟环境中验证：
 
-- 两个脚本可以启动并显示帮助/使用说明
-- Python 3.14.3 可运行
-- `requests`、FFmpeg、FFprobe 已检测到
-- 当前环境尚未安装 `faster-whisper`，因此实际语音转写仍需先安装该依赖
+- 清华 TUNA PyPI 镜像可安装 `requirements.txt` 的全部依赖，`pip check` 无冲突
+- `requests`、`httpx`、`faster-whisper` 可以导入
+- `douyin_bugpk.py --check` 识别到 Python 依赖、FFmpeg、FFprobe；模型未缓存会明确标为首次下载警告
+- 两个脚本的帮助/使用入口可启动
 
 ## 许可证
 

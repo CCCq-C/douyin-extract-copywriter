@@ -503,7 +503,9 @@ async def extract_subtitle_via_asr(video_path: str, config: dict) -> str:
             return result_text
 
         except ImportError:
-            print("  ⚠️ faster-whisper 未安装，请运行: pip install faster-whisper")
+            python_cmd = f'& "{sys.executable}"' if os.name == "nt" else f'"{sys.executable}"'
+            print(f"  ⚠️ faster-whisper 未安装，请运行: {python_cmd} douyin_bugpk.py --check")
+            print("     自检会给出当前解释器对应的清华 PyPI 镜像安装命令。")
             return ""
         except Exception as e:
             print(f"  ⚠️ ASR 失败: {e}")

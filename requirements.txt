@@ -1,0 +1,4 @@
+# Complete runtime dependencies for both entry points.
+requests>=2.31,<3
+httpx>=0.27,<1
+faster-whisper>=1.1,<2
